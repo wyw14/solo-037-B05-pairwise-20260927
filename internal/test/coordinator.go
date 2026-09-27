@@ -34,34 +34,41 @@ func (c *Coordinator) Arm(at time.Time) error {
     if err != nil {
         return err
     }
-    c.Operation = next
-    record, err := journal.StageRecord(c.Operation.ID, c.Operation.Stage, at)
+    record, err := journal.StageRecord(next.ID, next.Stage, at)
     if err != nil {
         return err
     }
-    return c.Store.Append(record)
+    if err := c.Store.Append(record); err != nil {
+        return err
+    }
+    c.Operation = next
+    return nil
 }
 
 func (c *Coordinator) BeginMeasurement(at time.Time) error {
     c.mu.Lock()
     defer c.mu.Unlock()
-    if c.Operation.Stage == model.StageArming {
-        next, err := c.Operation.Advance(model.StageAccelerating, at)
+    next := c.Operation
+    if next.Stage == model.StageArming {
+        var err error
+        next, err = next.Advance(model.StageAccelerating, at)
         if err != nil {
             return err
         }
-        c.Operation = next
     }
-    next, err := c.Operation.Advance(model.StageMeasuring, at)
+    next, err := next.Advance(model.StageMeasuring, at)
     if err != nil {
+        return err
+    }
+    record, err := journal.StageRecord(next.ID, next.Stage, at)
+    if err != nil {
+        return err
+    }
+    if err := c.Store.Append(record); err != nil {
         return err
     }
     c.Operation = next
-    record, err := journal.StageRecord(c.Operation.ID, c.Operation.Stage, at)
-    if err != nil {
-        return err
-    }
-    return c.Store.Append(record)
+    return nil
 }
 
 func (c *Coordinator) Complete(at time.Time) error {
