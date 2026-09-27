@@ -34,34 +34,48 @@ func (c *Coordinator) Arm(at time.Time) error {
     if err != nil {
         return err
     }
-    c.Operation = next
-    record, err := journal.StageRecord(c.Operation.ID, c.Operation.Stage, at)
+    // Commit the stage event to the write-ahead journal before publishing the
+    // new stage in memory. A failed append must leave the run in its original
+    // stage so the transition can be retried.
+    record, err := journal.StageRecord(next.ID, next.Stage, at)
     if err != nil {
         return err
     }
-    return c.Store.Append(record)
+    if err := c.Store.Append(record); err != nil {
+        return err
+    }
+    c.Operation = next
+    return nil
 }
 
 func (c *Coordinator) BeginMeasurement(at time.Time) error {
     c.mu.Lock()
     defer c.mu.Unlock()
-    if c.Operation.Stage == model.StageArming {
-        next, err := c.Operation.Advance(model.StageAccelerating, at)
+    next := c.Operation
+    if next.Stage == model.StageArming {
+        advanced, err := next.Advance(model.StageAccelerating, at)
         if err != nil {
             return err
         }
-        c.Operation = next
+        next = advanced
     }
-    next, err := c.Operation.Advance(model.StageMeasuring, at)
+    advanced, err := next.Advance(model.StageMeasuring, at)
     if err != nil {
+        return err
+    }
+    next = advanced
+    // Publish the new stage only after the stage event is durable. On append
+    // failure c.Operation is left untouched (still arming/configured) so the
+    // transition can be retried.
+    record, err := journal.StageRecord(next.ID, next.Stage, at)
+    if err != nil {
+        return err
+    }
+    if err := c.Store.Append(record); err != nil {
         return err
     }
     c.Operation = next
-    record, err := journal.StageRecord(c.Operation.ID, c.Operation.Stage, at)
-    if err != nil {
-        return err
-    }
-    return c.Store.Append(record)
+    return nil
 }
 
 func (c *Coordinator) Complete(at time.Time) error {
